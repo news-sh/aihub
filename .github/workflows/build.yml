@@ -1,0 +1,40 @@
+name: Build AI Hub IPA
+
+on:
+  # Deliberately no `paths:` filter. If you rebuild this project by wiping the
+  # folder and force-pushing a fresh history, GitHub has no common ancestor to
+  # diff against and a path filter would silently skip the whole workflow.
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+          swift --version
+
+      - name: Build unsigned IPA
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Verify output
+        run: |
+          ls -la build/
+          unzip -l build/AIHub.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIHub-ipa
+          path: build/AIHub.ipa
+          retention-days: 90
