@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# build.sh — compile AI Hub into an unsigned .ipa
+#
+# REQUIRES A MAC (or a macos-latest GitHub Actions runner) with Xcode
+# command line tools, exactly like the InstaDesk build.
+#
+# Usage:  cd AIHub && ./build.sh
+# Output: build/AIHub.ipa   (unsigned — sign with Sideloadly/AltStore)
+
+set -euo pipefail
+
+APP_NAME="AIHub"
+MIN_IOS="15.0"
+BUILD_DIR="build"
+APP_DIR="${BUILD_DIR}/Payload/${APP_NAME}.app"
+
+echo "==> Cleaning"
+rm -rf "${BUILD_DIR}"
+mkdir -p "${APP_DIR}"
+
+echo "==> Locating iOS SDK"
+SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+echo "    ${SDK_PATH}"
+
+echo "==> Compiling Swift sources (arm64, min iOS ${MIN_IOS})"
+xcrun -sdk iphoneos swiftc \
+    -target arm64-apple-ios${MIN_IOS} \
+    -sdk "${SDK_PATH}" \
+    -parse-as-library \
+    -O \
+    -framework UIKit \
+    -framework WebKit \
+    -o "${APP_DIR}/${APP_NAME}" \
+    Sources/AppDelegate.swift \
+    Sources/Compat.swift \
+    Sources/PolyfillsLoader.swift \
+    Sources/HubViewController.swift \
+    Sources/AIWebViewController.swift
+
+echo "==> Copying Info.plist"
+cp Info.plist "${APP_DIR}/Info.plist"
+
+# ---- JS resources ----------------------------------------------------
+# legacy-transpiler.js + patch.js rewrite chunks that WebKit 605 cannot parse;
+# Polyfills/ supplies the missing runtime APIs. Shipped as real files (not Swift
+# literals) so they can be swapped without touching the compiler.
+echo "==> Copying JS resources"
+cp Resources/legacy-transpiler.js "${APP_DIR}/"
+cp Resources/patch.js             "${APP_DIR}/"
+cp -R Resources/Polyfills         "${APP_DIR}/"
+echo "    transpiler : $(du -h Resources/legacy-transpiler.js | cut -f1)"
+echo "    polyfills  : $(find Resources/Polyfills -name '*.js' | wc -l | tr -d ' ') files"
+
+# ---- Icons -----------------------------------------------------------
+if [ -f "Icon.png" ]; then
+    echo "==> Generating icon set"
+    PB="/usr/libexec/PlistBuddy"
+    $PB -c "Add :CFBundleIconFiles array" "${APP_DIR}/Info.plist" 2>/dev/null || true
+
+    i=0
+    for size in 60 120 180 76 152 1024; do
+        out="AppIcon${size}.png"
+        sips -z ${size} ${size} Icon.png --out "${APP_DIR}/${out}" >/dev/null 2>&1
+        $PB -c "Add :CFBundleIconFiles:${i} string ${out}" "${APP_DIR}/Info.plist" 2>/dev/null || true
+        i=$((i+1))
+    done
+
+    $PB -c "Add :CFBundleIcons dict" "${APP_DIR}/Info.plist" 2>/dev/null || true
+    $PB -c "Add :CFBundleIcons:CFBundlePrimaryIcon dict" "${APP_DIR}/Info.plist" 2>/dev/null || true
+    $PB -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles array" "${APP_DIR}/Info.plist" 2>/dev/null || true
+    $PB -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0 string AppIcon120.png" "${APP_DIR}/Info.plist" 2>/dev/null || true
+    $PB -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:1 string AppIcon180.png" "${APP_DIR}/Info.plist" 2>/dev/null || true
+    $PB -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:2 string AppIcon60.png" "${APP_DIR}/Info.plist" 2>/dev/null || true
+else
+    echo "==> No Icon.png found, skipping icons (app will show a blank icon)"
+fi
+
+echo "==> Packaging .ipa"
+cd "${BUILD_DIR}"
+zip -qr "${APP_NAME}.ipa" Payload
+cd ..
+
+SIZE=$(du -h "${BUILD_DIR}/${APP_NAME}.ipa" | cut -f1)
+echo ""
+echo "Done -> AIHub/${BUILD_DIR}/${APP_NAME}.ipa  (${SIZE}, UNSIGNED)"
+echo ""
+echo "Next: sign + install with Sideloadly or AltStore using a free"
+echo "Apple ID. Free certs expire after 7 days and need re-signing."
